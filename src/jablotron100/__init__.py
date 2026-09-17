@@ -5,7 +5,9 @@ from .config import (
     DeviceDefinition,
     DeviceType,
     JablotronConfig,
+    load_config,
     load_home_assistant_config,
+    save_config,
 )
 from .errors import (
     ConfigurationError,
@@ -18,6 +20,9 @@ from .models import (
     AlarmState,
     ArmMode,
     BatteryState,
+    BusDiagnostics,
+    CentralUnitDiagnostics,
+    CentralUnitInfo,
     DeviceConnection,
     DeviceFault,
     DeviceInfo,
@@ -38,6 +43,9 @@ __all__ = [
     "ArmMode",
     "AlarmState",
     "BatteryState",
+    "BusDiagnostics",
+    "CentralUnitDiagnostics",
+    "CentralUnitInfo",
     "ConfigurationError",
     "DeviceDefinition",
     "DeviceConnection",
@@ -64,4 +72,6 @@ __all__ = [
     "StateChange",
     "detect_serial_port",
     "load_home_assistant_config",
+    "load_config",
+    "save_config",
 ]

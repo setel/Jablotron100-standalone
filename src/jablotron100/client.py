@@ -9,10 +9,17 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 
 from .config import DeviceDefinition, DeviceType, JablotronConfig
-from .devices import parse_device_info, parse_device_state, parse_device_status
+from .devices import (
+    parse_device_info,
+    parse_device_state,
+    parse_device_status,
+    parse_system_info,
+)
 from .errors import ConfigurationError
 from .models import (
     ArmMode,
+    CentralUnitDiagnostics,
+    CentralUnitInfo,
     DeviceFault,
     DeviceSnapshot,
     PacketEvent,
@@ -25,12 +32,20 @@ from .protocol import (
     UI_CONTROL_AUTHORISATION_END,
     create_authorisation_code,
     create_command,
+    create_device_diagnostics,
+    create_device_diagnostics_request,
+    create_device_status_request,
+    create_devices_sections_request,
     create_keepalive,
     create_pg_control,
     create_section_control,
+    create_system_info_request,
     create_ui_control,
     pack_reports,
     split_report,
+    SYSTEM_INFO_FIRMWARE_VERSION,
+    SYSTEM_INFO_HARDWARE_VERSION,
+    SYSTEM_INFO_MODEL,
 )
 from .transport import HidrawTransport, Transport
 from .state import (
@@ -57,12 +72,18 @@ class JablotronClient:
         keepalive_interval: float = 30.0,
         number_of_pg_outputs: int | None = None,
         devices: tuple[DeviceDefinition, ...] = (),
+        auto_reconnect: bool = True,
+        reconnect_delay: float = 1.0,
+        reconnect_max_delay: float = 30.0,
     ) -> None:
         self._code = code
         self._transport = transport or HidrawTransport(port)
         self._keepalive_interval = keepalive_interval
         self._number_of_pg_outputs = number_of_pg_outputs
         self._device_definitions = devices
+        self._auto_reconnect = auto_reconnect
+        self._reconnect_delay = reconnect_delay
+        self._reconnect_max_delay = reconnect_max_delay
         self._listeners: set[PacketListener] = set()
         self._state_listeners: set[StateListener] = set()
         self._sections: dict[int, SectionState] = {}
@@ -75,13 +96,45 @@ class JablotronClient:
             for definition in devices
             if definition.device_type not in (DeviceType.EMPTY, DeviceType.OTHER)
         }
+        self._central_unit = CentralUnitInfo()
+        self._diagnostics = CentralUnitDiagnostics()
         self._reader_task: asyncio.Task[None] | None = None
         self._keepalive_task: asyncio.Task[None] | None = None
+        self._reconnect_task: asyncio.Task[None] | None = None
+        self._initialization_task: asyncio.Task[None] | None = None
+        self._diagnostic_events: dict[int, asyncio.Event] = {}
+        self._system_info_event = asyncio.Event()
+        self._connection_lock = asyncio.Lock()
         self._running = False
+        self._connected = False
 
     @property
     def running(self) -> bool:
         return self._running
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    @property
+    def initialization_complete(self) -> bool:
+        task = self._initialization_task
+        return bool(
+            task
+            and task.done()
+            and not task.cancelled()
+            and task.exception() is None
+        )
+
+    @property
+    def central_unit(self) -> CentralUnitInfo:
+        return self._central_unit
+
+    @property
+    def diagnostics(self) -> CentralUnitDiagnostics:
+        return replace(
+            self._diagnostics, buses=dict(self._diagnostics.buses)
+        )
 
     @property
     def sections(self) -> dict[int, SectionState]:
@@ -107,8 +160,11 @@ class JablotronClient:
         code: str | None = None,
         transport: Transport | None = None,
         keepalive_interval: float = 30.0,
+        auto_reconnect: bool = True,
+        reconnect_delay: float = 1.0,
+        reconnect_max_delay: float = 30.0,
     ) -> "JablotronClient":
-        effective_code = config.code if code is None else code
+        effective_code = config.resolve_code() if code is None else code
         if not effective_code:
             raise ConfigurationError(
                 "authorisation code is missing; pass code= or import an unredacted entry"
@@ -120,6 +176,9 @@ class JablotronClient:
             keepalive_interval=keepalive_interval,
             number_of_pg_outputs=config.number_of_pg_outputs,
             devices=config.devices,
+            auto_reconnect=auto_reconnect,
+            reconnect_delay=reconnect_delay,
+            reconnect_max_delay=reconnect_max_delay,
         )
 
     def add_packet_listener(self, listener: PacketListener) -> Callable[[], None]:
@@ -141,26 +200,37 @@ class JablotronClient:
     async def start(self) -> None:
         if self._running:
             return
-        await self._transport.open()
         self._running = True
-        self._reader_task = asyncio.create_task(
-            self._read_loop(), name="jablotron-reader"
-        )
-        self._keepalive_task = asyncio.create_task(
-            self._keepalive_loop(), name="jablotron-keepalive"
-        )
-        await self._send_packets(create_keepalive(self._code))
-        await self.refresh()
+        try:
+            await self._connect()
+        except Exception:
+            if not self._auto_reconnect:
+                self._running = False
+                raise
+            LOGGER.exception("Initial Jablotron connection failed; retrying")
+            self._schedule_reconnect()
 
     async def close(self) -> None:
         self._running = False
-        tasks = [task for task in (self._reader_task, self._keepalive_task) if task]
+        tasks = [
+            task
+            for task in (
+                self._reader_task,
+                self._keepalive_task,
+                self._reconnect_task,
+                self._initialization_task,
+            )
+            if task
+        ]
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._reader_task = None
         self._keepalive_task = None
+        self._reconnect_task = None
+        self._initialization_task = None
+        self._connected = False
         await self._transport.close()
 
     async def __aenter__(self) -> "JablotronClient":
@@ -174,6 +244,72 @@ class JablotronClient:
         await self._send_packets(
             [create_command(COMMAND_GET_SECTIONS_AND_PG_OUTPUTS_STATES)]
         )
+
+    async def initialize_devices(self) -> None:
+        """Request identity, states and status for every configured device."""
+        packets = [
+            create_system_info_request(SYSTEM_INFO_MODEL),
+            create_system_info_request(SYSTEM_INFO_HARDWARE_VERSION),
+            create_system_info_request(SYSTEM_INFO_FIRMWARE_VERSION),
+            *create_keepalive(self._code),
+            create_command(COMMAND_GET_SECTIONS_AND_PG_OUTPUTS_STATES),
+            create_device_status_request(0),
+        ]
+        active = [
+            definition.number
+            for definition in self._device_definitions
+            if definition.device_type not in (DeviceType.EMPTY, DeviceType.OTHER)
+        ]
+        packets.extend(create_device_status_request(number) for number in active)
+        if active:
+            packets.append(create_devices_sections_request(1, max(active)))
+        await self._send_packets(packets)
+
+        self._initialization_task = asyncio.create_task(
+            self.refresh_diagnostics(), name="jablotron-initial-diagnostics"
+        )
+
+    async def refresh_diagnostics(self, *, timeout: float = 2.0) -> None:
+        """Refresh diagnostic data for the panel and capable peripherals."""
+        if self._central_unit.model is None:
+            try:
+                await asyncio.wait_for(self._system_info_event.wait(), timeout)
+            except TimeoutError:
+                LOGGER.debug("Central unit identity was not received in time")
+        numbers = [0, *self._system_module_numbers()]
+        diagnostic_types = {
+            DeviceType.THERMOMETER,
+            DeviceType.THERMOSTAT,
+            DeviceType.SMOKE_DETECTOR,
+            DeviceType.SIREN_OUTDOOR,
+            DeviceType.SIREN_INDOOR,
+            DeviceType.ELECTRICITY_METER_WITH_PULSE_OUTPUT,
+        }
+        numbers.extend(
+            item.number
+            for item in self._device_definitions
+            if item.device_type in diagnostic_types
+        )
+        for number in dict.fromkeys(numbers):
+            if not self._running or not self._connected:
+                return
+            event = self._diagnostic_events.setdefault(number, asyncio.Event())
+            event.clear()
+            await self._send_packets(
+                [
+                    create_device_diagnostics(number, True),
+                    create_device_diagnostics_request(number),
+                ]
+            )
+            try:
+                await asyncio.wait_for(event.wait(), timeout)
+            except TimeoutError:
+                LOGGER.debug("No diagnostic response from device %d", number)
+            finally:
+                if self._connected:
+                    await self._send_packets(
+                        [create_device_diagnostics(number, False)]
+                    )
 
     async def set_section(
         self,
@@ -215,6 +351,71 @@ class JablotronClient:
         for report in pack_reports(packets):
             await self._transport.write(report)
 
+    async def _connect(self) -> None:
+        async with self._connection_lock:
+            if not self._running or self._connected:
+                return
+            await self._transport.open()
+            self._connected = True
+            self._reader_task = asyncio.create_task(
+                self._read_loop(), name="jablotron-reader"
+            )
+            self._keepalive_task = asyncio.create_task(
+                self._keepalive_loop(), name="jablotron-keepalive"
+            )
+            try:
+                await self.initialize_devices()
+            except Exception:
+                self._connected = False
+                await self._transport.close()
+                raise
+            await self._publish_state(StateChange("connection", 0, True))
+
+    def _schedule_reconnect(self) -> None:
+        if not self._running:
+            return
+        self._connected = False
+        if not self._auto_reconnect:
+            self._running = False
+            return
+        if self._reconnect_task is None or self._reconnect_task.done():
+            self._reconnect_task = asyncio.create_task(
+                self._reconnect_loop(), name="jablotron-reconnect"
+            )
+
+    async def _reconnect_loop(self) -> None:
+        await self._publish_state(StateChange("connection", 0, False))
+        current = asyncio.current_task()
+        for task in (self._reader_task, self._keepalive_task):
+            if task and task is not current and not task.done():
+                task.cancel()
+        if self._initialization_task and not self._initialization_task.done():
+            self._initialization_task.cancel()
+        try:
+            await self._transport.close()
+        except Exception:
+            LOGGER.debug("Error while closing failed transport", exc_info=True)
+
+        delay = self._reconnect_delay
+        while self._running:
+            if delay > 0:
+                await asyncio.sleep(delay)
+            try:
+                await self._connect()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception(
+                    "Jablotron reconnect failed; retrying in %.1f seconds",
+                    min(delay * 2, self._reconnect_max_delay),
+                )
+                delay = min(
+                    max(delay * 2, self._reconnect_delay),
+                    self._reconnect_max_delay,
+                )
+            else:
+                return
+
     async def _read_loop(self) -> None:
         try:
             while self._running:
@@ -226,9 +427,12 @@ class JablotronClient:
                     await self._publish(PacketEvent.now(packet))
         except asyncio.CancelledError:
             raise
-        except Exception:
-            LOGGER.exception("Jablotron read loop stopped")
-            self._running = False
+        except Exception as error:
+            if isinstance(error, ConnectionError):
+                LOGGER.warning("Jablotron read loop lost the connection: %s", error)
+            else:
+                LOGGER.exception("Jablotron read loop lost the connection")
+            self._schedule_reconnect()
 
     async def _keepalive_loop(self) -> None:
         try:
@@ -238,8 +442,8 @@ class JablotronClient:
         except asyncio.CancelledError:
             raise
         except Exception:
-            LOGGER.exception("Jablotron keepalive loop stopped")
-            self._running = False
+            LOGGER.exception("Jablotron keepalive lost the connection")
+            self._schedule_reconnect()
 
     async def _publish(self, event: PacketEvent) -> None:
         for listener in tuple(self._listeners):
@@ -251,7 +455,39 @@ class JablotronClient:
                 LOGGER.exception("Jablotron packet listener failed")
 
     async def _handle_state_packet(self, packet: bytes) -> None:
-        if packet[0] == PACKET_SECTIONS_STATES:
+        if packet[0] == 0x40:
+            info_type, value = parse_system_info(packet)
+            changes: dict[str, str] = {}
+            if info_type == SYSTEM_INFO_MODEL:
+                changes["model"] = value
+            elif info_type == SYSTEM_INFO_HARDWARE_VERSION:
+                changes["hardware_version"] = value
+            elif info_type == SYSTEM_INFO_FIRMWARE_VERSION:
+                changes["firmware_version"] = value
+            if changes:
+                old = self._central_unit
+                self._central_unit = replace(old, **changes)
+                if old != self._central_unit:
+                    await self._publish_state(
+                        StateChange("central_unit", 0, self._central_unit)
+                    )
+                if all(
+                    (
+                        self._central_unit.model,
+                        self._central_unit.hardware_version,
+                        self._central_unit.firmware_version,
+                    )
+                ):
+                    self._system_info_event.set()
+                    modules = self._system_module_numbers()
+                    if modules:
+                        await self._send_packets(
+                            [
+                                create_device_status_request(number)
+                                for number in modules
+                            ]
+                        )
+        elif packet[0] == PACKET_SECTIONS_STATES:
             new_states = parse_section_states(packet)
             old_states, self._sections = self._sections, new_states
             for number, state in new_states.items():
@@ -267,7 +503,14 @@ class JablotronClient:
                     await self._publish_state(StateChange("pg_output", number, state))
         elif packet[0] == 0x52 and len(packet) >= 3 and packet[2] == 0x8A:
             status = parse_device_status(packet)
-            if self._accept_device(status.number):
+            role = self._system_module_role(status.number)
+            if role == "lan" and len(packet) >= 10:
+                await self._update_diagnostics(
+                    lan_ip=".".join(str(part) for part in packet[6:10])
+                )
+            elif role == "gsm" and len(packet) >= 6:
+                await self._update_diagnostics(gsm_signal_strength=packet[5])
+            elif self._accept_device(status.number):
                 old = self._devices.get(
                     status.number, DeviceSnapshot(number=status.number)
                 )
@@ -282,7 +525,16 @@ class JablotronClient:
                 await self._store_device_snapshot(old, new)
         elif packet[0] == 0x55:
             state = parse_device_state(packet)
-            if self._accept_device(state.number):
+            role = self._system_module_role(state.number)
+            if state.number == 0 and state.fault is DeviceFault.POWER_SUPPLY:
+                await self._update_diagnostics(
+                    power_supply_ok=not bool(state.active)
+                )
+            elif role == "lan" and state.active is not None:
+                await self._update_diagnostics(lan_connected=not state.active)
+            elif role == "gsm" and state.active is not None:
+                await self._update_diagnostics(gsm_connected=not state.active)
+            elif self._accept_device(state.number):
                 old = self._devices.get(
                     state.number, DeviceSnapshot(number=state.number)
                 )
@@ -307,7 +559,63 @@ class JablotronClient:
                 await self._store_device_snapshot(old, new)
         elif packet[0] == 0x90:
             info = parse_device_info(packet)
-            if self._accept_device(info.number):
+            event = self._diagnostic_events.get(info.number)
+            if event:
+                event.set()
+            role = self._system_module_role(info.number)
+            if info.number == 0:
+                changes = {
+                    name: value
+                    for name, value in (
+                        ("power_supply_ok", info.power_supply_ok),
+                        (
+                            "battery_level",
+                            info.battery.level if info.battery else None,
+                        ),
+                        (
+                            "battery_ok",
+                            info.battery.ok if info.battery else None,
+                        ),
+                        (
+                            "battery_standby_voltage",
+                            info.battery_standby_voltage,
+                        ),
+                        ("battery_load_voltage", info.battery_load_voltage),
+                    )
+                    if value is not None
+                }
+                if info.buses:
+                    changes["buses"] = {
+                        bus.number: bus for bus in info.buses
+                    }
+                await self._update_diagnostics(**changes)
+            elif role == "lan":
+                await self._update_diagnostics(
+                    **{
+                        name: value
+                        for name, value in (
+                            ("lan_connected", info.lan_connected),
+                            ("dhcp_ok", info.dhcp_ok),
+                            ("lan_ip", info.ip_address),
+                        )
+                        if value is not None
+                    }
+                )
+            elif role == "gsm":
+                await self._update_diagnostics(
+                    **{
+                        name: value
+                        for name, value in (
+                            ("gsm_connected", info.gsm_connected),
+                            (
+                                "gsm_signal_strength",
+                                info.gsm_signal_strength,
+                            ),
+                        )
+                        if value is not None
+                    }
+                )
+            elif self._accept_device(info.number):
                 old = self._devices.get(
                     info.number, DeviceSnapshot(number=info.number)
                 )
@@ -329,6 +637,44 @@ class JablotronClient:
                     changes["pulses"] = info.pulses
                 new = replace(old, **changes)
                 await self._store_device_snapshot(old, new)
+
+    def _system_module_numbers(self) -> tuple[int, ...]:
+        if self._central_unit.model in (
+            "JA-103K",
+            "JA-103KRY",
+            "JA-107K",
+        ):
+            return (233, 234)
+        if self._central_unit.model in (
+            "JA-101K",
+            "JA-101K-LAN",
+            "JA-106K-3G",
+            "JA-14K",
+        ):
+            return (124, 125, 127)
+        return ()
+
+    def _system_module_role(self, number: int) -> str | None:
+        modules = self._system_module_numbers()
+        if modules == (233, 234):
+            return {233: "lan", 234: "gsm"}.get(number)
+        if modules == (124, 125, 127):
+            return {124: "power", 125: "lan", 127: "gsm"}.get(number)
+        return None
+
+    async def _update_diagnostics(self, **changes: object) -> None:
+        if not changes:
+            return
+        old = self._diagnostics
+        if "buses" in changes:
+            merged = dict(old.buses)
+            merged.update(changes["buses"])  # type: ignore[arg-type]
+            changes["buses"] = merged
+        self._diagnostics = replace(old, **changes)
+        if old != self._diagnostics:
+            await self._publish_state(
+                StateChange("diagnostics", 0, self.diagnostics)
+            )
 
     def _accept_device(self, number: int) -> bool:
         if not 1 <= number <= 230:

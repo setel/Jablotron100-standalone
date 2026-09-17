@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jablotron100-standalone"
-version = "0.1.0"
+version = "0.2.0"
 description = "Home Assistant independent client library for Jablotron 100+ alarm panels"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -3,6 +3,10 @@ import unittest
 from jablotron100 import ArmMode, ProtocolError
 from jablotron100.protocol import (
     create_authorisation_code,
+    create_device_diagnostics,
+    create_device_diagnostics_request,
+    create_device_status_request,
+    create_devices_sections_request,
     create_pg_control,
     create_section_control,
     pack_reports,
@@ -32,6 +36,27 @@ class ProtocolTests(unittest.TestCase):
             bytes.fromhex("80020da0"),
         )
         self.assertEqual(create_pg_control(2, True), bytes.fromhex("8003230101"))
+
+    def test_initialization_packets_match_upstream_format(self) -> None:
+        self.assertEqual(
+            create_device_status_request(24), bytes.fromhex("52020a18")
+        )
+        self.assertEqual(
+            create_devices_sections_request(1, 120),
+            bytes.fromhex("3a020178"),
+        )
+        self.assertEqual(
+            create_device_diagnostics(24, True),
+            bytes.fromhex("94021801"),
+        )
+        self.assertEqual(
+            create_device_diagnostics_request(24),
+            bytes.fromhex("9603180900"),
+        )
+        self.assertEqual(
+            create_device_diagnostics(24, False),
+            bytes.fromhex("94021800"),
+        )
 
     def test_four_digit_authorisation_matches_upstream_algorithm(self) -> None:
         self.assertEqual(

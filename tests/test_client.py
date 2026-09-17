@@ -12,11 +12,13 @@ from jablotron100 import (
 class FakeTransport:
     def __init__(self) -> None:
         self.opened = False
+        self.open_count = 0
         self.reads: asyncio.Queue[bytes] = asyncio.Queue()
         self.writes: list[bytes] = []
 
     async def open(self) -> None:
         self.opened = True
+        self.open_count += 1
 
     async def close(self) -> None:
         self.opened = False
@@ -92,6 +94,79 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(client.devices[1].active)
         self.assertTrue(client.devices[3].active)
+
+    async def test_reconnects_after_transport_eof(self) -> None:
+        transport = FakeTransport()
+        client = JablotronClient(
+            code="1234",
+            transport=transport,
+            keepalive_interval=3600,
+            reconnect_delay=0.001,
+            reconnect_max_delay=0.005,
+        )
+        changes: list[bool] = []
+        client.add_state_listener(
+            lambda change: (
+                changes.append(change.value)
+                if change.kind == "connection"
+                else None
+            )
+        )
+
+        await client.start()
+        await transport.reads.put(b"")
+        for _ in range(100):
+            if transport.open_count >= 2 and client.connected:
+                break
+            await asyncio.sleep(0.002)
+        await client.close()
+
+        self.assertGreaterEqual(transport.open_count, 2)
+        self.assertIn(False, changes)
+        self.assertGreaterEqual(changes.count(True), 2)
+
+    async def test_initialization_requests_identity_and_device_status(self) -> None:
+        transport = FakeTransport()
+        client = JablotronClient(
+            code="1234",
+            transport=transport,
+            devices=(
+                DeviceDefinition(1, DeviceType.RADIO_MODULE),
+                DeviceDefinition(2, DeviceType.MOTION_DETECTOR),
+            ),
+        )
+        await client.start()
+        await client.close()
+
+        combined = b"".join(transport.writes)
+        self.assertIn(bytes.fromhex("300102"), combined)
+        self.assertIn(bytes.fromhex("52020a01"), combined)
+        self.assertIn(bytes.fromhex("52020a02"), combined)
+        self.assertIn(bytes.fromhex("3a020102"), combined)
+
+    async def test_exposes_central_unit_and_lan_diagnostics(self) -> None:
+        transport = FakeTransport()
+        client = JablotronClient(
+            code="1234", transport=transport, keepalive_interval=3600
+        )
+        await client.start()
+        await transport.reads.put(
+            bytes.fromhex(
+                "4008024a412d3130374b"
+                "4003084831"
+                "4003094631"
+                "900be90a080f00a682c0a8010a"
+                "00"
+            )
+        )
+        await asyncio.sleep(0)
+
+        self.assertEqual(client.central_unit.model, "JA-107K")
+        self.assertEqual(client.central_unit.hardware_version, "H1")
+        self.assertEqual(client.central_unit.firmware_version, "F1")
+        self.assertTrue(client.diagnostics.lan_connected)
+        self.assertEqual(client.diagnostics.lan_ip, "192.168.1.10")
+        await client.close()
 
 
 def _device_packet(number: int) -> bytes:

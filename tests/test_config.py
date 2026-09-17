@@ -7,7 +7,9 @@ from jablotron100 import (
     ConfigurationError,
     DeviceType,
     JablotronClient,
+    load_config,
     load_home_assistant_config,
+    save_config,
 )
 
 
@@ -93,6 +95,38 @@ class ConfigImportTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ConfigurationError, "does not match"):
             load_home_assistant_config(path)
+
+    def test_standalone_toml_is_sparse_and_round_trips(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "jablotron.toml"
+        path.write_text(
+            """
+[connection]
+port = "auto"
+code_env = "TEST_JABLOTRON_CODE"
+
+[system]
+number_of_devices = 4
+number_of_pg_outputs = 2
+
+[[devices]]
+number = 2
+type = "motion_detector"
+name = "Hall"
+""",
+            encoding="utf-8",
+        )
+        config = load_config(path)
+        self.assertEqual(config.number_of_devices, 4)
+        self.assertEqual(config.devices[0].device_type, DeviceType.EMPTY)
+        self.assertEqual(config.devices[1].name, "Hall")
+
+        exported = Path(directory.name) / "exported.toml"
+        save_config(config, exported)
+        text = exported.read_text(encoding="utf-8")
+        self.assertNotIn("code =", text)
+        self.assertEqual(load_config(exported), config)
 
 
 if __name__ == "__main__":

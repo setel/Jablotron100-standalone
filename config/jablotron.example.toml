@@ -1,0 +1,29 @@
+# Jablotron100-standalone configuration
+[connection]
+port = "auto"
+code_env = "JABLOTRON_CODE"
+
+[system]
+number_of_devices = 120
+number_of_pg_outputs = 32
+
+[security]
+partially_arming_mode = "night_mode"
+require_code_to_arm = false
+require_code_to_disarm = true
+
+# Only installed peripherals need to be listed. Missing positions are empty.
+[[devices]]
+number = 1
+type = "radio_module"
+name = "Radio module"
+
+[[devices]]
+number = 2
+type = "keypad"
+name = "Entrance keypad"
+
+[[devices]]
+number = 3
+type = "motion_detector"
+name = "Hall motion"

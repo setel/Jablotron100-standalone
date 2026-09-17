@@ -3,6 +3,7 @@
 from .errors import ProtocolError
 from .models import (
     BatteryState,
+    BusDiagnostics,
     DeviceConnection,
     DeviceFault,
     DeviceInfo,
@@ -110,6 +111,13 @@ def parse_device_info(packet: bytes) -> DeviceInfo:
     load_voltage: float | None = None
     pulses: list[int | None] = []
     info_types: list[DeviceInfoType] = []
+    lan_connected: bool | None = None
+    dhcp_ok: bool | None = None
+    ip_address: str | None = None
+    gsm_connected: bool | None = None
+    gsm_signal_strength: int | None = None
+    power_supply_ok: bool | None = None
+    buses: list[BusDiagnostics] = []
 
     for subpacket in subpackets:
         subpacket_type = subpacket[0]
@@ -124,6 +132,8 @@ def parse_device_info(packet: bytes) -> DeviceInfo:
             continue
 
         data = subpacket[2:]
+        if number == 0 and data:
+            power_supply_ok = bool(data[0] & 0x40)
         if data:
             parsed_battery = parse_battery_state(data[0])
             if parsed_battery is not None:
@@ -153,10 +163,26 @@ def parse_device_info(packet: bytes) -> DeviceInfo:
                         int.from_bytes(raw[2 : 2 + value_size], "little") / 10,
                         1,
                     )
-                    if channel == 0:
+                    if number == 0:
+                        if channel == 0:
+                            load_voltage = voltage
+                        elif channel == 0x10:
+                            standby_voltage = voltage
+                        elif channel in (1, 2, 3) and len(raw) >= 4:
+                            buses.append(
+                                BusDiagnostics(channel, voltage, raw[3])
+                            )
+                    elif channel == 0:
                         standby_voltage = voltage
                     elif channel == 1:
                         load_voltage = voltage
+            elif info_type is DeviceInfoType.LAN and len(raw) >= 6:
+                lan_connected = bool(raw[1] & 0x80)
+                dhcp_ok = bool(raw[1] & 0x02)
+                ip_address = ".".join(str(part) for part in raw[2:6])
+            elif info_type is DeviceInfoType.GSM and len(raw) >= 6:
+                gsm_signal_strength = raw[1]
+                gsm_connected = bool(raw[5] & 0x01)
             elif info_type is DeviceInfoType.PULSE and len(pulses) < 2:
                 pulses.append(
                     int.from_bytes(raw[1:3], "little")
@@ -174,7 +200,26 @@ def parse_device_info(packet: bytes) -> DeviceInfo:
         battery_load_voltage=load_voltage,
         pulses=tuple(pulses),
         info_types=tuple(info_types),
+        lan_connected=lan_connected,
+        dhcp_ok=dhcp_ok,
+        ip_address=ip_address,
+        gsm_connected=gsm_connected,
+        gsm_signal_strength=gsm_signal_strength,
+        power_supply_ok=power_supply_ok,
+        buses=tuple(buses),
     )
+
+
+def parse_system_info(packet: bytes) -> tuple[int, str]:
+    """Decode one 0x40 response into (information type, text)."""
+    _validate_packet(packet)
+    if packet[0] != 0x40 or len(packet) < 3:
+        raise ProtocolError("not a system info packet")
+    try:
+        value = packet[3:].split(b"\x00", 1)[0].decode("ascii")
+    except UnicodeDecodeError as error:
+        raise ProtocolError("system info is not ASCII") from error
+    return packet[2], value
 
 
 def parse_battery_state(value: int) -> BatteryState | None:

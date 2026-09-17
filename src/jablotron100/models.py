@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, IntEnum, IntFlag, StrEnum
 from time import monotonic
 
@@ -67,7 +67,13 @@ class SectionState:
 class StateChange:
     kind: str
     number: int
-    value: SectionState | DeviceSnapshot | bool
+    value: (
+        SectionState
+        | DeviceSnapshot
+        | CentralUnitInfo
+        | CentralUnitDiagnostics
+        | bool
+    )
 
 
 class DeviceConnection(StrEnum):
@@ -148,6 +154,42 @@ class DeviceInfo:
     battery_load_voltage: float | None = None
     pulses: tuple[int | None, ...] = ()
     info_types: tuple[DeviceInfoType, ...] = ()
+    lan_connected: bool | None = None
+    dhcp_ok: bool | None = None
+    ip_address: str | None = None
+    gsm_connected: bool | None = None
+    gsm_signal_strength: int | None = None
+    power_supply_ok: bool | None = None
+    buses: tuple[BusDiagnostics, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class BusDiagnostics:
+    number: int
+    voltage: float
+    devices_loss: int
+
+
+@dataclass(frozen=True, slots=True)
+class CentralUnitInfo:
+    model: str | None = None
+    hardware_version: str | None = None
+    firmware_version: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CentralUnitDiagnostics:
+    power_supply_ok: bool | None = None
+    battery_level: int | None = None
+    battery_ok: bool | None = None
+    battery_standby_voltage: float | None = None
+    battery_load_voltage: float | None = None
+    lan_connected: bool | None = None
+    dhcp_ok: bool | None = None
+    lan_ip: str | None = None
+    gsm_connected: bool | None = None
+    gsm_signal_strength: int | None = None
+    buses: dict[int, BusDiagnostics] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

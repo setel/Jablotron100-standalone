@@ -11,6 +11,7 @@ from jablotron100.devices import (
     parse_device_info,
     parse_device_state,
     parse_device_status,
+    parse_system_info,
 )
 
 
@@ -121,6 +122,33 @@ class DeviceInfoTests(unittest.TestCase):
         self.assertEqual(info.number, 36)
         self.assertEqual(info.pulses, (1772, 46504))
         self.assertEqual(info.info_types, (DeviceInfoType.PULSE,) * 4)
+
+    def test_central_unit_bus_diagnostics(self) -> None:
+        info = parse_device_info(bytes.fromhex("9009000a0648006a017b02"))
+        self.assertTrue(info.power_supply_ok)
+        self.assertEqual(info.battery.level, 80)
+        self.assertEqual(info.buses[0].number, 1)
+        self.assertEqual(info.buses[0].voltage, 12.3)
+        self.assertEqual(info.buses[0].devices_loss, 2)
+
+    def test_lan_and_gsm_diagnostics(self) -> None:
+        lan = parse_device_info(
+            bytes.fromhex("900be90a080f00a682c0a8010a")
+        )
+        gsm = parse_device_info(
+            bytes.fromhex("900bea0a080f00a44900000001")
+        )
+        self.assertTrue(lan.lan_connected)
+        self.assertTrue(lan.dhcp_ok)
+        self.assertEqual(lan.ip_address, "192.168.1.10")
+        self.assertTrue(gsm.gsm_connected)
+        self.assertEqual(gsm.gsm_signal_strength, 73)
+
+    def test_system_info(self) -> None:
+        self.assertEqual(
+            parse_system_info(bytes.fromhex("4008024a412d3130374b")),
+            (2, "JA-107K"),
+        )
 
 
 def _create_state_packet(number: int, active: bool = True) -> bytes:
