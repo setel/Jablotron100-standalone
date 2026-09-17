@@ -8,7 +8,13 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 
-from .config import DeviceDefinition, DeviceType, JablotronConfig
+from .config import (
+    DeviceDefinition,
+    DeviceType,
+    JablotronConfig,
+    PGOutputDefinition,
+    SectionDefinition,
+)
 from .devices import (
     parse_device_info,
     parse_device_state,
@@ -72,6 +78,8 @@ class JablotronClient:
         keepalive_interval: float = 30.0,
         number_of_pg_outputs: int | None = None,
         devices: tuple[DeviceDefinition, ...] = (),
+        sections: tuple[SectionDefinition, ...] = (),
+        pg_outputs: tuple[PGOutputDefinition, ...] = (),
         auto_reconnect: bool = True,
         reconnect_delay: float = 1.0,
         reconnect_max_delay: float = 30.0,
@@ -81,6 +89,8 @@ class JablotronClient:
         self._keepalive_interval = keepalive_interval
         self._number_of_pg_outputs = number_of_pg_outputs
         self._device_definitions = devices
+        self._section_definitions = sections
+        self._pg_output_definitions = pg_outputs
         self._auto_reconnect = auto_reconnect
         self._reconnect_delay = reconnect_delay
         self._reconnect_max_delay = reconnect_max_delay
@@ -152,6 +162,22 @@ class JablotronClient:
         return self._device_definitions
 
     @property
+    def section_definitions(self) -> tuple[SectionDefinition, ...]:
+        return self._section_definitions
+
+    @property
+    def pg_output_definitions(self) -> tuple[PGOutputDefinition, ...]:
+        return self._pg_output_definitions
+
+    @property
+    def section_names(self) -> dict[int, str]:
+        return {item.number: item.name for item in self._section_definitions}
+
+    @property
+    def pg_output_names(self) -> dict[int, str]:
+        return {item.number: item.name for item in self._pg_output_definitions}
+
+    @property
     def devices(self) -> dict[int, DeviceSnapshot]:
         return dict(self._devices)
 
@@ -179,6 +205,8 @@ class JablotronClient:
             keepalive_interval=keepalive_interval,
             number_of_pg_outputs=config.number_of_pg_outputs,
             devices=config.devices,
+            sections=config.sections,
+            pg_outputs=config.pg_outputs,
             auto_reconnect=auto_reconnect,
             reconnect_delay=reconnect_delay,
             reconnect_max_delay=reconnect_max_delay,

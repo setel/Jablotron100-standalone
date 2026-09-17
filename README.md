@@ -10,7 +10,7 @@ v `NOTICE.md`.
 
 ## Aktuální stav
 
-Verze 0.3 obsahuje:
+Verze 0.3.1 obsahuje:
 
 - automatické vyhledání USB HID zařízení `16D6:0008`;
 - transport přes `/dev/hidraw*` s vyměnitelným testovacím transportem;
@@ -21,6 +21,7 @@ Verze 0.3 obsahuje:
 - samostatnou, ručně editovatelnou TOML konfiguraci;
 - bezpečný převod z Home Assistant `.storage/core.config_entries`;
 - import názvů a hardwarových modelů periferií z F-Link CSV;
+- import názvů sekcí a PG výstupů z F-Link CSV;
 - dekódování periferií, baterií, signálu, teplot, napětí sirén a pulzů;
 - identifikaci modelu, HW a FW ústředny;
 - diagnostiku napájení, baterie, BUS napětí a výpadků zařízení;
@@ -66,6 +67,14 @@ number = 3
 type = "motion_detector"
 name = "Chodba"
 model = "JA-110P"
+
+[[sections]]
+number = 1
+name = "Dům"
+
+[[pg_outputs]]
+number = 1
+name = "Vrata"
 ```
 
 Autorizační kód doporučujeme ponechat mimo soubor:
@@ -133,7 +142,9 @@ modely lze přidat do již vytvořené TOML konfigurace:
 python -m jablotron100 merge-flink \
   config/jablotron.toml \
   config/Periferie.csv \
-  config/jablotron.toml
+  config/jablotron.toml \
+  --sections config/Sekce.csv \
+  --pg-outputs config/PGvystupy.csv
 ```
 
 Funkční `type` zůstává zachovaný. To je důležité například u JA-118M,
@@ -154,6 +165,9 @@ U nejednoznačných modelů nastaví importér `type = "custom"`; uživatel jej
 pak upraví podle skutečného zapojení. Export ODS vytvořený kopírováním přes
 schránku není pro import potřeba.
 
+Export `Uzivatele.csv` obsahuje telefonní čísla, přístupové kódy a karty.
+Knihovna jej z bezpečnostních důvodů neimportuje a Git jej ignoruje.
+
 ## Diagnostika a stav připojení
 
 - `client.central_unit` — model, HW a FW verze;
@@ -162,6 +176,8 @@ schránku není pro import potřeba.
 - `client.initialization_complete` — dokončení diagnostické inicializace.
 - `client.devices[number].name` — název z F-Linku;
 - `client.devices[number].model` — hardwarový model periferie.
+- `client.section_names` — slovník čísel a názvů sekcí;
+- `client.pg_output_names` — slovník čísel a názvů PG výstupů.
 
 Změny přicházejí přes `add_state_listener()` s typy `connection`,
 `central_unit`, `diagnostics`, `section`, `pg_output` a `device`.

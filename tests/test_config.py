@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from jablotron100 import (
@@ -12,8 +13,11 @@ from jablotron100 import (
     create_config_from_flink,
     load_config,
     load_flink_csv,
+    load_flink_pg_outputs_csv,
+    load_flink_sections_csv,
     load_home_assistant_config,
     merge_flink_devices,
+    merge_flink_names,
     save_config,
 )
 
@@ -172,6 +176,34 @@ name = "Hall"
             starter.devices[0].device_type, DeviceType.MOTION_DETECTOR
         )
         self.assertEqual(starter.devices[2].device_type, DeviceType.CUSTOM)
+
+        sections_path = Path(directory.name) / "Sekce.csv"
+        sections_path.write_bytes(
+            (
+                '"Pozice";"Název sekce";"Stav"\n'
+                '"1";"Dům";"OK"\n'
+                '"2";"Kůlna";"OK"\n'
+            ).encode("cp1250")
+        )
+        pg_path = Path(directory.name) / "PGvystupy.csv"
+        pg_path.write_bytes(
+            (
+                '"Pozice";"Jméno";"Logika"\n'
+                '"1";"Vrata";"Spínací"\n'
+                '"2";"Světlo";"Spínací"\n'
+            ).encode("cp1250")
+        )
+        named = merge_flink_names(
+            replace(merged, number_of_pg_outputs=2),
+            sections=load_flink_sections_csv(sections_path),
+            pg_outputs=load_flink_pg_outputs_csv(pg_path),
+        )
+        self.assertEqual(named.sections[0].name, "Dům")
+        self.assertEqual(named.pg_outputs[1].name, "Světlo")
+
+        exported = Path(directory.name) / "named.toml"
+        save_config(named, exported)
+        self.assertEqual(load_config(exported), named)
 
 
 if __name__ == "__main__":

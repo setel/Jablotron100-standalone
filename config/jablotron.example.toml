@@ -12,6 +12,14 @@ partially_arming_mode = "night_mode"
 require_code_to_arm = false
 require_code_to_disarm = true
 
+[[sections]]
+number = 1
+name = "House"
+
+[[pg_outputs]]
+number = 1
+name = "Gate"
+
 # Only installed peripherals need to be listed. Missing positions are empty.
 [[devices]]
 number = 1

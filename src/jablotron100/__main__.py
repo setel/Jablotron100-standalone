@@ -8,8 +8,11 @@ from .config import (
     create_config_from_flink,
     load_config,
     load_flink_csv,
+    load_flink_pg_outputs_csv,
+    load_flink_sections_csv,
     load_home_assistant_config,
     merge_flink_devices,
+    merge_flink_names,
     save_config,
 )
 
@@ -38,6 +41,8 @@ def main() -> None:
     merge.add_argument("csv")
     merge.add_argument("destination")
     merge.add_argument("--include-serial-numbers", action="store_true")
+    merge.add_argument("--sections")
+    merge.add_argument("--pg-outputs")
 
     import_flink = commands.add_parser(
         "import-flink",
@@ -73,9 +78,26 @@ def main() -> None:
             load_flink_csv(args.csv),
             include_serial_numbers=args.include_serial_numbers,
         )
+        config = merge_flink_names(
+            config,
+            sections=(
+                load_flink_sections_csv(args.sections)
+                if args.sections
+                else ()
+            ),
+            pg_outputs=(
+                load_flink_pg_outputs_csv(args.pg_outputs)
+                if args.pg_outputs
+                else ()
+            ),
+        )
         save_config(config, args.destination)
         named = sum(bool(device.name) for device in config.devices)
-        print(f"Created {args.destination} with {named} named devices.")
+        print(
+            f"Created {args.destination} with {named} named devices, "
+            f"{len(config.sections)} sections and "
+            f"{len(config.pg_outputs)} PG outputs."
+        )
     else:
         config = create_config_from_flink(
             load_flink_csv(args.csv),

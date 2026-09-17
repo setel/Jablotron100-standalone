@@ -60,11 +60,25 @@ class FLinkDevice:
 
 
 @dataclass(frozen=True, slots=True)
+class SectionDefinition:
+    number: int
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
+class PGOutputDefinition:
+    number: int
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
 class JablotronConfig:
     serial_port: str = "auto"
     code: str | None = field(default=None, repr=False)
     code_env: str | None = "JABLOTRON_CODE"
     devices: tuple[DeviceDefinition, ...] = ()
+    sections: tuple[SectionDefinition, ...] = ()
+    pg_outputs: tuple[PGOutputDefinition, ...] = ()
     number_of_pg_outputs: int = 0
     partially_arming_mode: str = "night_mode"
     require_code_to_arm: bool = False
@@ -113,6 +127,18 @@ def load_config(path: str | Path) -> JablotronConfig:
     raw_devices = document.get("devices", [])
     if not isinstance(raw_devices, list):
         raise ConfigurationError("devices must be an array of tables")
+    sections = _load_named_definitions(
+        document.get("sections", []),
+        SectionDefinition,
+        maximum=15,
+        label="section",
+    )
+    pg_output_definitions = _load_named_definitions(
+        document.get("pg_outputs", []),
+        PGOutputDefinition,
+        maximum=128,
+        label="PG output",
+    )
 
     by_number: dict[int, DeviceDefinition] = {}
     for item in raw_devices:
@@ -147,6 +173,8 @@ def load_config(path: str | Path) -> JablotronConfig:
         raise ConfigurationError("number_of_devices must be between 0 and 230")
     if not 0 <= pg_outputs <= 128:
         raise ConfigurationError("number_of_pg_outputs must be between 0 and 128")
+    if any(item.number > pg_outputs for item in pg_output_definitions):
+        raise ConfigurationError("PG output name exceeds number_of_pg_outputs")
     if any(number > configured_count for number in by_number):
         raise ConfigurationError("device number exceeds number_of_devices")
 
@@ -166,6 +194,8 @@ def load_config(path: str | Path) -> JablotronConfig:
         code=code,
         code_env=code_env,
         devices=devices,
+        sections=sections,
+        pg_outputs=pg_output_definitions,
         number_of_pg_outputs=pg_outputs,
         partially_arming_mode=str(
             security.get("partially_arming_mode", "night_mode")
@@ -207,6 +237,24 @@ def save_config(
             f"require_code_to_disarm = {str(config.require_code_to_disarm).lower()}",
         ]
     )
+    for section in config.sections:
+        lines.extend(
+            [
+                "",
+                "[[sections]]",
+                f"number = {section.number}",
+                f"name = {_toml_string(section.name)}",
+            ]
+        )
+    for pg_output in config.pg_outputs:
+        lines.extend(
+            [
+                "",
+                "[[pg_outputs]]",
+                f"number = {pg_output.number}",
+                f"name = {_toml_string(pg_output.name)}",
+            ]
+        )
     for device in config.devices:
         if device.device_type is DeviceType.EMPTY:
             continue
@@ -324,6 +372,44 @@ def merge_flink_devices(
             )
         )
     return replace(config, devices=tuple(merged))
+
+
+def load_flink_sections_csv(
+    path: str | Path,
+) -> tuple[SectionDefinition, ...]:
+    """Read section numbers and names from an F-Link CSV export."""
+    return tuple(
+        SectionDefinition(number, name)
+        for number, name in _load_flink_names(path, "nazev sekce", 15)
+    )
+
+
+def load_flink_pg_outputs_csv(
+    path: str | Path,
+) -> tuple[PGOutputDefinition, ...]:
+    """Read PG output numbers and names from an F-Link CSV export."""
+    return tuple(
+        PGOutputDefinition(number, name)
+        for number, name in _load_flink_names(path, "jmeno", 128)
+    )
+
+
+def merge_flink_names(
+    config: JablotronConfig,
+    *,
+    sections: tuple[SectionDefinition, ...] = (),
+    pg_outputs: tuple[PGOutputDefinition, ...] = (),
+) -> JablotronConfig:
+    """Merge section and PG output labels into an existing config."""
+    if pg_outputs and any(
+        item.number > config.number_of_pg_outputs for item in pg_outputs
+    ):
+        raise ConfigurationError("F-Link PG output exceeds number_of_pg_outputs")
+    return replace(
+        config,
+        sections=sections or config.sections,
+        pg_outputs=pg_outputs or config.pg_outputs,
+    )
 
 
 def create_config_from_flink(
@@ -476,6 +562,84 @@ def _mapping(value: Any, name: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ConfigurationError(f"{name} must be a table")
     return value
+
+
+def _load_named_definitions(
+    raw_items: Any,
+    definition_type: type[SectionDefinition] | type[PGOutputDefinition],
+    *,
+    maximum: int,
+    label: str,
+) -> tuple[SectionDefinition, ...] | tuple[PGOutputDefinition, ...]:
+    if not isinstance(raw_items, list):
+        raise ConfigurationError(f"{label}s must be an array of tables")
+    result = []
+    seen: set[int] = set()
+    for item in raw_items:
+        values = _mapping(item, f"each {label}")
+        number = _as_int(values.get("number"), f"{label} number")
+        name = values.get("name")
+        if not 1 <= number <= maximum:
+            raise ConfigurationError(
+                f"{label} number must be between 1 and {maximum}"
+            )
+        if number in seen:
+            raise ConfigurationError(f"duplicate {label} number: {number}")
+        if not isinstance(name, str) or not name.strip():
+            raise ConfigurationError(f"{label} name must be a non-empty string")
+        seen.add(number)
+        result.append(definition_type(number, name.strip()))
+    return tuple(result)
+
+
+def _load_flink_names(
+    path: str | Path,
+    name_column: str,
+    maximum: int,
+) -> list[tuple[int, str]]:
+    source = Path(path)
+    text: str | None = None
+    for encoding in ("utf-8-sig", "cp1250"):
+        try:
+            text = source.read_text(encoding=encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+        except OSError as error:
+            raise ConfigurationError(f"cannot read F-Link export: {source}") from error
+    if text is None:
+        raise ConfigurationError("F-Link CSV must use UTF-8 or Windows-1250")
+    rows = list(csv.reader(text.splitlines(), delimiter=";"))
+    if not rows:
+        raise ConfigurationError("F-Link CSV is empty")
+    columns = {
+        _normalize_column(name): index for index, name in enumerate(rows[0])
+    }
+    if "pozice" not in columns or name_column not in columns:
+        raise ConfigurationError(
+            f"F-Link CSV must contain Pozice and {name_column} columns"
+        )
+    result: list[tuple[int, str]] = []
+    seen: set[int] = set()
+    for line, row in enumerate(rows[1:], start=2):
+        try:
+            number = int(row[columns["pozice"]].strip())
+            name = row[columns[name_column]].strip()
+        except (IndexError, ValueError) as error:
+            raise ConfigurationError(
+                f"invalid F-Link row on line {line}"
+            ) from error
+        if not 1 <= number <= maximum:
+            raise ConfigurationError(
+                f"F-Link position {number} is outside 1..{maximum}"
+            )
+        if number in seen:
+            raise ConfigurationError(f"duplicate F-Link position: {number}")
+        if not name:
+            raise ConfigurationError(f"empty F-Link name on line {line}")
+        seen.add(number)
+        result.append((number, name))
+    return result
 
 
 def _toml_string(value: str) -> str:

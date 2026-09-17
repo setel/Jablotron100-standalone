@@ -6,6 +6,8 @@ from jablotron100 import (
     DeviceDefinition,
     DeviceType,
     JablotronClient,
+    PGOutputDefinition,
+    SectionDefinition,
 )
 
 
@@ -87,12 +89,16 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 DeviceDefinition(4, DeviceType.EMPTY),
             ),
+            sections=(SectionDefinition(1, "House"),),
+            pg_outputs=(PGOutputDefinition(1, "Gate"),),
         )
 
         self.assertEqual(set(client.devices), {1, 2, 3})
         self.assertEqual(client.devices[3].device_type, "motion_detector")
         self.assertEqual(client.devices[3].name, "Hall motion")
         self.assertEqual(client.devices[3].model, "JA-110P")
+        self.assertEqual(client.section_names, {1: "House"})
+        self.assertEqual(client.pg_output_names, {1: "Gate"})
 
         await client.start()
         await transport.reads.put(_device_packet(1) + _device_packet(3) + b"\x00")
