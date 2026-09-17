@@ -6,3 +6,5 @@ dist/
 *.egg-info/
 config/core.config_entries
 config/jablotron.toml
+config/Periferie.csv
+config/Periferie.ods

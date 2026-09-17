@@ -4,9 +4,13 @@ from .client import JablotronClient
 from .config import (
     DeviceDefinition,
     DeviceType,
+    FLinkDevice,
     JablotronConfig,
+    create_config_from_flink,
     load_config,
+    load_flink_csv,
     load_home_assistant_config,
+    merge_flink_devices,
     save_config,
 )
 from .errors import (
@@ -58,6 +62,7 @@ __all__ = [
     "DeviceStatePacket",
     "DeviceStatus",
     "DeviceType",
+    "FLinkDevice",
     "HidrawTransport",
     "JablotronClient",
     "JablotronConfig",
@@ -71,7 +76,10 @@ __all__ = [
     "TransportClosed",
     "StateChange",
     "detect_serial_port",
+    "create_config_from_flink",
+    "load_flink_csv",
     "load_home_assistant_config",
     "load_config",
+    "merge_flink_devices",
     "save_config",
 ]

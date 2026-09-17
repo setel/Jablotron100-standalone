@@ -5,10 +5,15 @@ from pathlib import Path
 
 from jablotron100 import (
     ConfigurationError,
+    DeviceDefinition,
     DeviceType,
     JablotronClient,
+    JablotronConfig,
+    create_config_from_flink,
     load_config,
+    load_flink_csv,
     load_home_assistant_config,
+    merge_flink_devices,
     save_config,
 )
 
@@ -127,6 +132,46 @@ name = "Hall"
         text = exported.read_text(encoding="utf-8")
         self.assertNotIn("code =", text)
         self.assertEqual(load_config(exported), config)
+
+    def test_merges_windows_1250_flink_names_and_models(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        csv_path = Path(directory.name) / "Periferie.csv"
+        csv_path.write_bytes(
+            (
+                '"Pozice";"Jméno";"Typ";"Sériové číslo"\n'
+                '"0";"Ústředna";"JA-107K";"1000"\n'
+                '"1";"Pohyb zádveří";"JA-110P";"2000"\n'
+                '"2";"Periferie 2";"";""\n'
+                '"3";"Otevřené okno";"JA-118M [1]";"3000"\n'
+            ).encode("cp1250")
+        )
+        flink = load_flink_csv(csv_path)
+        base = JablotronConfig(
+            devices=(
+                DeviceDefinition(1, DeviceType.MOTION_DETECTOR),
+                DeviceDefinition(2, DeviceType.EMPTY),
+                DeviceDefinition(3, DeviceType.WINDOW_OPENING_DETECTOR),
+            )
+        )
+
+        merged = merge_flink_devices(base, flink)
+        self.assertEqual(merged.devices[0].name, "Pohyb zádveří")
+        self.assertEqual(merged.devices[0].model, "JA-110P")
+        self.assertIsNone(merged.devices[0].serial_number)
+        self.assertEqual(
+            merged.devices[2].device_type,
+            DeviceType.WINDOW_OPENING_DETECTOR,
+        )
+        self.assertEqual(merged.devices[2].name, "Otevřené okno")
+
+        starter = create_config_from_flink(
+            flink, number_of_devices=3, number_of_pg_outputs=2
+        )
+        self.assertEqual(
+            starter.devices[0].device_type, DeviceType.MOTION_DETECTOR
+        )
+        self.assertEqual(starter.devices[2].device_type, DeviceType.CUSTOM)
 
 
 if __name__ == "__main__":

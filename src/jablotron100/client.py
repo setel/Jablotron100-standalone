@@ -92,6 +92,9 @@ class JablotronClient:
             definition.number: DeviceSnapshot(
                 number=definition.number,
                 device_type=definition.device_type.value,
+                name=definition.name,
+                model=definition.model,
+                serial_number=definition.serial_number,
             )
             for definition in devices
             if definition.device_type not in (DeviceType.EMPTY, DeviceType.OTHER)

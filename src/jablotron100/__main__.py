@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import argparse
 
-from .config import load_config, load_home_assistant_config, save_config
+from .config import (
+    create_config_from_flink,
+    load_config,
+    load_flink_csv,
+    load_home_assistant_config,
+    merge_flink_devices,
+    save_config,
+)
 
 
 def main() -> None:
@@ -23,6 +30,24 @@ def main() -> None:
     )
     check.add_argument("path")
 
+    merge = commands.add_parser(
+        "merge-flink",
+        help="add F-Link names and models to an existing TOML config",
+    )
+    merge.add_argument("config")
+    merge.add_argument("csv")
+    merge.add_argument("destination")
+    merge.add_argument("--include-serial-numbers", action="store_true")
+
+    import_flink = commands.add_parser(
+        "import-flink",
+        help="create a starter TOML config from an F-Link CSV export",
+    )
+    import_flink.add_argument("csv")
+    import_flink.add_argument("destination")
+    import_flink.add_argument("--number-of-devices", type=int)
+    import_flink.add_argument("--number-of-pg-outputs", type=int, default=0)
+
     args = parser.parse_args()
     if args.command == "convert-ha":
         config = load_home_assistant_config(
@@ -31,7 +56,7 @@ def main() -> None:
         save_config(config, args.destination)
         print(f"Created {args.destination} without the authorisation code.")
         print("Set the JABLOTRON_CODE environment variable before running.")
-    else:
+    elif args.command == "check-config":
         config = load_config(args.path)
         active = sum(
             device.device_type.value not in ("empty", "other")
@@ -42,6 +67,30 @@ def main() -> None:
             f"{active} installed devices, "
             f"{config.number_of_pg_outputs} PG outputs."
         )
+    elif args.command == "merge-flink":
+        config = merge_flink_devices(
+            load_config(args.config),
+            load_flink_csv(args.csv),
+            include_serial_numbers=args.include_serial_numbers,
+        )
+        save_config(config, args.destination)
+        named = sum(bool(device.name) for device in config.devices)
+        print(f"Created {args.destination} with {named} named devices.")
+    else:
+        config = create_config_from_flink(
+            load_flink_csv(args.csv),
+            number_of_devices=args.number_of_devices,
+            number_of_pg_outputs=args.number_of_pg_outputs,
+        )
+        save_config(config, args.destination)
+        custom = sum(
+            device.device_type.value == "custom" for device in config.devices
+        )
+        print(f"Created {args.destination}.")
+        if custom:
+            print(
+                f"Review the type of {custom} custom devices in the TOML file."
+            )
 
 
 if __name__ == "__main__":

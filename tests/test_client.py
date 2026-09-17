@@ -79,13 +79,20 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             devices=(
                 DeviceDefinition(1, DeviceType.RADIO_MODULE),
                 DeviceDefinition(2, DeviceType.KEYPAD),
-                DeviceDefinition(3, DeviceType.MOTION_DETECTOR),
+                DeviceDefinition(
+                    3,
+                    DeviceType.MOTION_DETECTOR,
+                    name="Hall motion",
+                    model="JA-110P",
+                ),
                 DeviceDefinition(4, DeviceType.EMPTY),
             ),
         )
 
         self.assertEqual(set(client.devices), {1, 2, 3})
         self.assertEqual(client.devices[3].device_type, "motion_detector")
+        self.assertEqual(client.devices[3].name, "Hall motion")
+        self.assertEqual(client.devices[3].model, "JA-110P")
 
         await client.start()
         await transport.reads.put(_device_packet(1) + _device_packet(3) + b"\x00")

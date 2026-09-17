@@ -10,7 +10,7 @@ v `NOTICE.md`.
 
 ## Aktuální stav
 
-Verze 0.2 obsahuje:
+Verze 0.3 obsahuje:
 
 - automatické vyhledání USB HID zařízení `16D6:0008`;
 - transport přes `/dev/hidraw*` s vyměnitelným testovacím transportem;
@@ -20,6 +20,7 @@ Verze 0.2 obsahuje:
 - stavové modely a callbacky pro sekce a PG výstupy;
 - samostatnou, ručně editovatelnou TOML konfiguraci;
 - bezpečný převod z Home Assistant `.storage/core.config_entries`;
+- import názvů a hardwarových modelů periferií z F-Link CSV;
 - dekódování periferií, baterií, signálu, teplot, napětí sirén a pulzů;
 - identifikaci modelu, HW a FW ústředny;
 - diagnostiku napájení, baterie, BUS napětí a výpadků zařízení;
@@ -64,6 +65,7 @@ number_of_pg_outputs = 32
 number = 3
 type = "motion_detector"
 name = "Chodba"
+model = "JA-110P"
 ```
 
 Autorizační kód doporučujeme ponechat mimo soubor:
@@ -121,12 +123,45 @@ save_config(config, "config/jablotron.toml")
 Převod záměrně nepřenese heslo. Původní importní funkce jej umí načíst pro
 zpětnou kompatibilitu, ale nový TOML standardně používá proměnnou prostředí.
 
+## Názvy periferií z F-Linku
+
+F-Link umí exportovat tabulku periferií do středníkem odděleného CSV.
+Knihovna podporuje UTF-8 i běžný export Windows-1250. Názvy a hardwarové
+modely lze přidat do již vytvořené TOML konfigurace:
+
+```bash
+python -m jablotron100 merge-flink \
+  config/jablotron.toml \
+  config/Periferie.csv \
+  config/jablotron.toml
+```
+
+Funkční `type` zůstává zachovaný. To je důležité například u JA-118M,
+jehož jednotlivé vstupy mohou představovat dveře, okno nebo garážová vrata.
+Sériová čísla se standardně nepřenášejí. Volba
+`--include-serial-numbers` je uloží, pokud je aplikace potřebuje.
+
+Uživatel bez Home Assistantu může vytvořit výchozí konfiguraci přímo:
+
+```bash
+python -m jablotron100 import-flink \
+  config/Periferie.csv \
+  config/jablotron.toml \
+  --number-of-pg-outputs 32
+```
+
+U nejednoznačných modelů nastaví importér `type = "custom"`; uživatel jej
+pak upraví podle skutečného zapojení. Export ODS vytvořený kopírováním přes
+schránku není pro import potřeba.
+
 ## Diagnostika a stav připojení
 
 - `client.central_unit` — model, HW a FW verze;
 - `client.diagnostics` — napájení, baterie, BUS, LAN a GSM;
 - `client.connected` — aktuální dostupnost USB spojení;
 - `client.initialization_complete` — dokončení diagnostické inicializace.
+- `client.devices[number].name` — název z F-Linku;
+- `client.devices[number].model` — hardwarový model periferie.
 
 Změny přicházejí přes `add_state_listener()` s typy `connection`,
 `central_unit`, `diagnostics`, `section`, `pg_output` a `device`.

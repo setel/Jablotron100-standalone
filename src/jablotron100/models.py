@@ -196,6 +196,9 @@ class CentralUnitDiagnostics:
 class DeviceSnapshot:
     number: int
     device_type: str | None = None
+    name: str | None = None
+    model: str | None = None
+    serial_number: str | None = None
     active: bool | None = None
     connection: DeviceConnection | None = None
     signal_strength: int | None = None

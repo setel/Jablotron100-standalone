@@ -17,13 +17,16 @@ require_code_to_disarm = true
 number = 1
 type = "radio_module"
 name = "Radio module"
+model = "JA-110R"
 
 [[devices]]
 number = 2
 type = "keypad"
 name = "Entrance keypad"
+model = "JA-114E"
 
 [[devices]]
 number = 3
 type = "motion_detector"
 name = "Hall motion"
+model = "JA-110P"

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 import tomllib
-from dataclasses import dataclass, field
+import unicodedata
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Mapping
@@ -45,6 +47,16 @@ class DeviceDefinition:
     number: int
     device_type: DeviceType
     name: str | None = None
+    model: str | None = None
+    serial_number: str | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class FLinkDevice:
+    number: int
+    name: str
+    model: str | None
+    serial_number: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,7 +129,11 @@ def load_config(path: str | Path) -> JablotronConfig:
                 f"unknown device type for device {number}: {values.get('type')!r}"
             ) from error
         by_number[number] = DeviceDefinition(
-            number, device_type, _optional_string(values.get("name"))
+            number=number,
+            device_type=device_type,
+            name=_optional_string(values.get("name")),
+            model=_optional_string(values.get("model")),
+            serial_number=_optional_string(values.get("serial_number")),
         )
 
     configured_count = _as_int(
@@ -204,10 +220,144 @@ def save_config(
         )
         if device.name:
             lines.append(f"name = {_toml_string(device.name)}")
+        if device.model:
+            lines.append(f"model = {_toml_string(device.model)}")
+        if device.serial_number:
+            lines.append(
+                f"serial_number = {_toml_string(device.serial_number)}"
+            )
     try:
         Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
     except OSError as error:
         raise ConfigurationError(f"cannot write configuration: {path}") from error
+
+
+def load_flink_csv(path: str | Path) -> tuple[FLinkDevice, ...]:
+    """Read a semicolon-separated F-Link peripheral export."""
+    source = Path(path)
+    text: str | None = None
+    for encoding in ("utf-8-sig", "cp1250"):
+        try:
+            text = source.read_text(encoding=encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+        except OSError as error:
+            raise ConfigurationError(f"cannot read F-Link export: {source}") from error
+    if text is None:
+        raise ConfigurationError("F-Link CSV must use UTF-8 or Windows-1250")
+
+    rows = list(csv.reader(text.splitlines(), delimiter=";"))
+    if not rows:
+        raise ConfigurationError("F-Link CSV is empty")
+    columns = {
+        _normalize_column(name): index for index, name in enumerate(rows[0])
+    }
+    required = ("pozice", "jmeno", "typ")
+    if any(name not in columns for name in required):
+        raise ConfigurationError(
+            "F-Link CSV must contain Pozice, Jmeno and Typ columns"
+        )
+    serial_column = columns.get("seriove cislo")
+
+    devices: list[FLinkDevice] = []
+    seen: set[int] = set()
+    for line, row in enumerate(rows[1:], start=2):
+        try:
+            number = int(row[columns["pozice"]].strip())
+        except (IndexError, ValueError) as error:
+            raise ConfigurationError(
+                f"invalid F-Link position on line {line}"
+            ) from error
+        if number == 0:
+            continue
+        if not 1 <= number <= 230:
+            raise ConfigurationError(
+                f"F-Link position {number} is outside 1..230"
+            )
+        if number in seen:
+            raise ConfigurationError(f"duplicate F-Link position: {number}")
+        seen.add(number)
+        try:
+            name = row[columns["jmeno"]].strip()
+            raw_model = row[columns["typ"]].strip()
+        except IndexError as error:
+            raise ConfigurationError(
+                f"incomplete F-Link row on line {line}"
+            ) from error
+        model = (
+            raw_model
+            if raw_model and _normalize_column(raw_model) != "priradit"
+            else None
+        )
+        serial = None
+        if serial_column is not None and serial_column < len(row):
+            serial = row[serial_column].strip() or None
+        devices.append(FLinkDevice(number, name, model, serial))
+    return tuple(devices)
+
+
+def merge_flink_devices(
+    config: JablotronConfig,
+    devices: tuple[FLinkDevice, ...],
+    *,
+    include_serial_numbers: bool = False,
+) -> JablotronConfig:
+    """Add F-Link names and hardware models while preserving semantic types."""
+    flink = {device.number: device for device in devices}
+    merged: list[DeviceDefinition] = []
+    for definition in config.devices:
+        source = flink.get(definition.number)
+        if source is None or source.model is None:
+            merged.append(definition)
+            continue
+        merged.append(
+            replace(
+                definition,
+                name=source.name or definition.name,
+                model=source.model,
+                serial_number=(
+                    source.serial_number
+                    if include_serial_numbers
+                    else definition.serial_number
+                ),
+            )
+        )
+    return replace(config, devices=tuple(merged))
+
+
+def create_config_from_flink(
+    devices: tuple[FLinkDevice, ...],
+    *,
+    number_of_devices: int | None = None,
+    number_of_pg_outputs: int = 0,
+) -> JablotronConfig:
+    """Create an editable starter config when Home Assistant is unavailable."""
+    configured_count = number_of_devices or max(
+        (device.number for device in devices), default=0
+    )
+    if not 0 <= configured_count <= 230:
+        raise ConfigurationError("number_of_devices must be between 0 and 230")
+    if not 0 <= number_of_pg_outputs <= 128:
+        raise ConfigurationError("number_of_pg_outputs must be between 0 and 128")
+    if any(device.number > configured_count for device in devices if device.model):
+        raise ConfigurationError("F-Link device exceeds number_of_devices")
+    by_number = {device.number: device for device in devices if device.model}
+    definitions = tuple(
+        DeviceDefinition(
+            number=number,
+            device_type=_infer_device_type(by_number[number].model)
+            if number in by_number
+            else DeviceType.EMPTY,
+            name=by_number[number].name if number in by_number else None,
+            model=by_number[number].model if number in by_number else None,
+        )
+        for number in range(1, configured_count + 1)
+    )
+    return JablotronConfig(
+        devices=definitions,
+        number_of_pg_outputs=number_of_pg_outputs,
+    )
 
 
 def load_home_assistant_config(
@@ -330,3 +480,29 @@ def _mapping(value: Any, name: str) -> Mapping[str, Any]:
 
 def _toml_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
+
+
+def _normalize_column(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value)
+    return "".join(
+        character for character in decomposed if not unicodedata.combining(character)
+    ).strip().lower()
+
+
+def _infer_device_type(model: str | None) -> DeviceType:
+    value = (model or "").upper()
+    if value.startswith("JA-110R"):
+        return DeviceType.RADIO_MODULE
+    if value.startswith(("JA-110P", "JA-120PC")):
+        return DeviceType.MOTION_DETECTOR
+    if value.startswith("JA-110A"):
+        return DeviceType.SIREN_INDOOR
+    if value.startswith("JA-110TP"):
+        return DeviceType.THERMOSTAT
+    if value.startswith(("JA-111ST", "JA-151ST")):
+        return DeviceType.SMOKE_DETECTOR
+    if value.startswith(("JA-154J", "JA-185J", "JA-186J")):
+        return DeviceType.KEY_FOB
+    if value.startswith(("JA-114E", "JA-113E", "JA-115E")):
+        return DeviceType.KEYPAD
+    return DeviceType.CUSTOM
