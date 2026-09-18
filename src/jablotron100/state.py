@@ -8,6 +8,22 @@ PACKET_PG_OUTPUTS_STATES = 0x50
 MAX_SECTIONS = 15
 
 
+def parse_device_states(packet: bytes) -> dict[int, bool]:
+    """Decode a 0xd8 bitmap, skipping its prefix byte and reserved bit 0.
+
+    Only positions present in the packet are returned; missing positions are
+    unknown, not inactive. Bit order follows the upstream integration.
+    """
+    if not packet or packet[0] != 0xD8:
+        raise ProtocolError("not a devices state bitmap")
+    _validate_declared_length(packet)
+    if len(packet) < 4:
+        raise ProtocolError("device state bitmap is truncated")
+    payload = packet[3:]
+    bits = int.from_bytes(payload, "little")
+    return {number: bool(bits & (1 << number)) for number in range(1, min(231, len(payload) * 8))}
+
+
 def parse_section_states(packet: bytes) -> dict[int, SectionState]:
     if not packet or packet[0] != PACKET_SECTIONS_STATES:
         raise ProtocolError("not a sections state packet")

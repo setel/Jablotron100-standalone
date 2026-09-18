@@ -116,6 +116,7 @@ class DeviceInfoType(IntEnum):
     INPUT_VALUE = 14
     INPUT_EXTENDED = 15
     PULSE = 17
+    GSM_EXTENDED = 21
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,13 +162,26 @@ class DeviceInfo:
     gsm_signal_strength: int | None = None
     power_supply_ok: bool | None = None
     buses: tuple[BusDiagnostics, ...] = ()
+    unknown_info_types: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class BusDiagnostics:
+    """Bus voltage and current following the upstream sensor's units.
+
+    ``devices_loss`` is the legacy name retained for API compatibility. The
+    upstream sensor labels this value as current in mA, not lost devices.
+    Prefer ``current_ma``. Live bus decoding on JA-107K is still unverified.
+    """
+
     number: int
     voltage: float
     devices_loss: int
+
+    @property
+    def current_ma(self) -> int:
+        """Bus current in milliamperes (legacy field: devices_loss)."""
+        return self.devices_loss
 
 
 @dataclass(frozen=True, slots=True)

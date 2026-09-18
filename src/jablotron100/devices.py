@@ -111,6 +111,7 @@ def parse_device_info(packet: bytes) -> DeviceInfo:
     load_voltage: float | None = None
     pulses: list[int | None] = []
     info_types: list[DeviceInfoType] = []
+    unknown_info_types: list[int] = []
     lan_connected: bool | None = None
     dhcp_ok: bool | None = None
     ip_address: str | None = None
@@ -140,6 +141,9 @@ def parse_device_info(packet: bytes) -> DeviceInfo:
                 battery = parsed_battery
 
         for info_type, raw in _parse_info_values(data):
+            if not isinstance(info_type, DeviceInfoType):
+                unknown_info_types.append(info_type)
+                continue
             info_types.append(info_type)
             if info_type is DeviceInfoType.SMOKE and len(raw) >= 2:
                 smoke_temperature = float(raw[1])
@@ -183,6 +187,11 @@ def parse_device_info(packet: bytes) -> DeviceInfo:
             elif info_type is DeviceInfoType.GSM and len(raw) >= 6:
                 gsm_signal_strength = raw[1]
                 gsm_connected = bool(raw[5] & 0x01)
+            elif info_type is DeviceInfoType.GSM_EXTENDED and len(raw) >= 2:
+                # JA-107K captures: d5 32 ... / d5 3c ..., with user-confirmed
+                # signal readings of 50% / 60%. Only this field is corroborated;
+                # do not reuse type 4's connection-status bit layout here.
+                gsm_signal_strength = raw[1]
             elif info_type is DeviceInfoType.PULSE and len(pulses) < 2:
                 pulses.append(
                     int.from_bytes(raw[1:3], "little")
@@ -207,6 +216,7 @@ def parse_device_info(packet: bytes) -> DeviceInfo:
         gsm_signal_strength=gsm_signal_strength,
         power_supply_ok=power_supply_ok,
         buses=tuple(buses),
+        unknown_info_types=tuple(unknown_info_types),
     )
 
 
@@ -235,8 +245,8 @@ def parse_battery_state(value: int) -> BatteryState | None:
 
 def _parse_info_values(
     data: bytes,
-) -> list[tuple[DeviceInfoType, bytes]]:
-    values: list[tuple[DeviceInfoType, bytes]] = []
+) -> list[tuple[DeviceInfoType | int, bytes]]:
+    values: list[tuple[DeviceInfoType | int, bytes]] = []
     start = 2
     while start < len(data):
         header = data[start]
@@ -249,8 +259,7 @@ def _parse_info_values(
         try:
             info_type = DeviceInfoType(header & 0x1F)
         except ValueError:
-            start = end
-            continue
+            info_type = header & 0x1F
         values.append((info_type, data[start:end]))
         start = end
     return values

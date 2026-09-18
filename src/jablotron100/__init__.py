@@ -1,6 +1,7 @@
 """Public API for the standalone Jablotron 100+ client."""
 
 from .client import JablotronClient
+from .communication_log import CommunicationLog, LoggedTransport
 from .config import (
     DeviceDefinition,
     DeviceType,
@@ -49,6 +50,8 @@ from .models import (
 from .transport import HidrawTransport, Transport, detect_serial_port
 
 __all__ = [
+    "CommunicationLog",
+    "LoggedTransport",
     "ArmMode",
     "AlarmState",
     "BatteryState",

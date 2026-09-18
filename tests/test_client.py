@@ -1,5 +1,7 @@
 import asyncio
 import unittest
+from unittest.mock import patch
+from jablotron100.protocol import create_authorisation_code
 
 from jablotron100 import (
     ArmMode,
@@ -33,6 +35,62 @@ class FakeTransport:
 
 
 class ClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_captured_front_door_open_and_close(self):
+        client = JablotronClient(code="1234", transport=FakeTransport())
+        changes = []
+        client.add_state_listener(lambda change: changes.append(change))
+        await client._handle_state_packet(bytes.fromhex("d8110000040200000000000000000000000000"))
+        self.assertTrue(client.devices[10].active)
+        await client._handle_state_packet(bytes.fromhex("550844928002d074802e"))
+        self.assertFalse(client.devices[10].active)
+        await client._handle_state_packet(bytes.fromhex("d8110008000200000000000000000000000000"))
+        self.assertFalse(client.devices[10].active)
+        self.assertTrue(client.devices[3].active)
+        self.assertEqual([c.value.active for c in changes if c.kind == "device" and c.number == 10], [True, False])
+
+    async def test_device_bitmap_updates_only_state_capable_devices(self):
+        client = JablotronClient(code="1234", transport=FakeTransport(), devices=(
+            DeviceDefinition(1, DeviceType.MOTION_DETECTOR),
+            DeviceDefinition(2, DeviceType.KEYPAD),
+            DeviceDefinition(3, DeviceType.EMPTY),
+        ))
+        await client._handle_state_packet(bytes.fromhex("d802000e"))
+        self.assertTrue(client.devices[1].active)
+        self.assertIsNone(client.devices[2].active)
+        self.assertNotIn(3, client.devices)
+        await client._handle_state_packet(bytes.fromhex("d8020000"))
+        self.assertFalse(client.devices[1].active)
+
+    async def test_keepalive_renews_session_but_not_during_entry_delay(self):
+        for packet, should_authorize in (("510401000700", True), ("510441000700", False)):
+            with self.subTest(packet=packet):
+                transport = FakeTransport()
+                client = JablotronClient(code="1234", transport=transport, keepalive_interval=0.001)
+                await client._handle_state_packet(bytes.fromhex(packet))
+                client._running = True
+                with patch("jablotron100.client.monotonic", side_effect=[0, 31, 31, 31, 31]):
+                    task = asyncio.create_task(client._keepalive_loop())
+                    for _ in range(10):
+                        if transport.writes:
+                            break
+                        await asyncio.sleep(0.001)
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                client._running = False
+                self.assertTrue(transport.writes)
+                self.assertEqual(create_authorisation_code("1234") in b"".join(transport.writes), should_authorize)
+
+    async def test_generic_gsm_status_does_not_invent_zero_signal(self) -> None:
+        client = JablotronClient(code="1234", transport=FakeTransport())
+        await client._handle_state_packet(bytes.fromhex("4008024a412d3130374b"))
+        await client._handle_state_packet(bytes.fromhex("52078aea05000000f2"))
+        self.assertIsNone(client.diagnostics.gsm_signal_strength)
+        await client._handle_state_packet(bytes.fromhex("52048aead532"))
+        self.assertEqual(client.diagnostics.gsm_signal_strength, 50)
+        await client._handle_state_packet(bytes.fromhex("900cea0a090f84d5320000000000"))
+        self.assertEqual(client.diagnostics.gsm_signal_strength, 50)
+        self.assertIsNone(client.diagnostics.gsm_connected)
+
     async def test_client_publishes_packets_and_sends_controls(self) -> None:
         transport = FakeTransport()
         client = JablotronClient(

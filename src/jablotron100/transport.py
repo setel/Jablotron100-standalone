@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import BinaryIO, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from .errors import SerialPortNotDetected, TransportClosed
 from .protocol import STREAM_PACKET_SIZE
@@ -45,7 +46,11 @@ def detect_serial_port(sysfs: Path = HIDRAW_SYSFS) -> str | None:
 
 
 class HidrawTransport:
-    """Asynchronous wrapper over the blocking Linux hidraw character device."""
+    """Linux hidraw transport with cancellable, nonblocking reads.
+
+    A blocked worker-thread read survives task cancellation and can prevent
+    asyncio.run() from exiting. Wait for readability in the event loop instead.
+    """
 
     def __init__(
         self,
@@ -56,7 +61,9 @@ class HidrawTransport:
         self._configured_port = port
         self._detector = detector
         self._port: str | None = None
-        self._reader: BinaryIO | None = None
+        self._reader: int | None = None
+        self._read_ready: asyncio.Future[None] | None = None
+        self._read_lock = asyncio.Lock()
         self._write_lock = asyncio.Lock()
 
     @property
@@ -73,19 +80,45 @@ class HidrawTransport:
         )
         if port is None:
             raise SerialPortNotDetected("no Jablotron USB device was detected")
-        self._reader = await asyncio.to_thread(open, port, "rb", 0)
+        self._reader = os.open(port, os.O_RDONLY | os.O_NONBLOCK)
         self._port = port
 
     async def close(self) -> None:
         reader, self._reader = self._reader, None
         if reader is not None:
-            await asyncio.to_thread(reader.close)
+            asyncio.get_running_loop().remove_reader(reader)
+            ready, self._read_ready = self._read_ready, None
+            if ready is not None and not ready.done():
+                ready.set_exception(TransportClosed("transport is closed"))
+            os.close(reader)
         self._port = None
 
     async def read(self) -> bytes:
-        if self._reader is None:
-            raise TransportClosed("transport is not open")
-        return await asyncio.to_thread(self._reader.read, STREAM_PACKET_SIZE)
+        async with self._read_lock:
+            reader = self._reader
+            if reader is None:
+                raise TransportClosed("transport is not open")
+            loop = asyncio.get_running_loop()
+            while self._reader == reader:
+                try:
+                    return os.read(reader, STREAM_PACKET_SIZE)
+                except BlockingIOError:
+                    pass
+                ready = loop.create_future()
+                self._read_ready = ready
+
+                def readable() -> None:
+                    if not ready.done():
+                        ready.set_result(None)
+
+                try:
+                    loop.add_reader(reader, readable)
+                    await ready
+                finally:
+                    if self._read_ready is ready:
+                        loop.remove_reader(reader)
+                        self._read_ready = None
+            raise TransportClosed("transport is closed")
 
     async def write(self, data: bytes) -> None:
         if self._port is None or self._reader is None:

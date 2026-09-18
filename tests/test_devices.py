@@ -81,6 +81,24 @@ class DeviceStateTests(unittest.TestCase):
 
 
 class DeviceInfoTests(unittest.TestCase):
+    def test_captured_ja107k_extended_gsm_signal(self) -> None:
+        # Uninterpreted radio fields are zeroed; preserve the confirmed signal.
+        for value in (50, 60):
+            with self.subTest(signal=value):
+                packet = bytearray.fromhex("900cea0a090f84d5000000000000")
+                packet[8] = value
+                info = parse_device_info(bytes(packet))
+                self.assertEqual(info.number, 234)
+                self.assertEqual(info.info_types, (DeviceInfoType.GSM_EXTENDED,))
+                self.assertIsNone(info.gsm_connected)
+                self.assertEqual(info.gsm_signal_strength, value)
+
+    def test_unknown_info_type_is_reported_without_guessing(self) -> None:
+        info = parse_device_info(bytes.fromhex("900cea0a090f84d6320000000000"))
+        self.assertEqual(info.unknown_info_types, (22,))
+        self.assertIsNone(info.gsm_connected)
+        self.assertIsNone(info.gsm_signal_strength)
+
     def test_thermometer_temperature(self) -> None:
         info = parse_device_info(
             bytes.fromhex("900e089c0b0f85ae0000ee00004f00ce")
@@ -130,6 +148,7 @@ class DeviceInfoTests(unittest.TestCase):
         self.assertEqual(info.buses[0].number, 1)
         self.assertEqual(info.buses[0].voltage, 12.3)
         self.assertEqual(info.buses[0].devices_loss, 2)
+        self.assertEqual(info.buses[0].current_ma, 2)
 
     def test_lan_and_gsm_diagnostics(self) -> None:
         lan = parse_device_info(

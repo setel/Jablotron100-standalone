@@ -4,6 +4,7 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+logs/
 config/core.config_entries
 config/jablotron.toml
 config/Periferie.csv

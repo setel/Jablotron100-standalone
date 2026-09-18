@@ -1,0 +1,188 @@
+JABLOTRON100-STANDALONE — CHYBY, OPRAVY A ROZDÍLY PROTI HA
+Stav: 19. 9. 2026
+
+ÚČEL A ROZSAH
+
+Tento soubor odděluje chyby nalezené při přenosu do standalone knihovny,
+záměrné rozdíly oproti HA integraci a dosud nevysvětlené chování ústředny.
+Není to seznam prokázaných chyb původní HA integrace.
+Popis zahrnuje místní necommitované změny, nikoli jen vydanou verzi 0.3.1.
+
+Referenční upstream: kukulich/home-assistant-jablotron100.
+Původní verze uživatele: 3.29.0,
+commit 7593480e48bafaa19d05501f1fd916230bf12f83.
+Referenční porovnání uvedené v UPSTREAM.md: 3.33.5,
+commit 4b1c30d5105ec041e5343d94a049666702454750.
+Během ověřování byly čteny také příslušné soubory větve master;
+netvrdíme tím úplné porovnání všech změn této pohyblivé větve.
+
+Zdrojové odkazy:
+https://github.com/kukulich/home-assistant-jablotron100
+https://github.com/kukulich/home-assistant-jablotron100/blob/4b1c30d5105ec041e5343d94a049666702454750/custom_components/jablotron100/jablotron.py
+https://github.com/kukulich/home-assistant-jablotron100/blob/master/custom_components/jablotron100/sensor.py
+
+Ověřená sestava: RPi5, Python 3.13.5, JA-107K, HW MD6112.09.3,
+FW MD12006, rozhraní JA-100 Flexi USB/HID, automatická detekce hidraw.
+Načteny 3 sekce, 32 stavů PG a status 41 nakonfigurovaných periferií.
+
+OPRAVENÉ CHYBY STANDALONE PŘENOSU
+
+S01 — Proces se neukončil po zavření klienta
+Projev: klient oznámil zavření, ale proces zůstal viset; vnější timeout
+jej ukončil s návratovým kódem 124.
+Příčina: blokující USB čtení přes asyncio.to_thread pokračovalo i po
+zrušení asynchronní úlohy; rušení úlohy nezastaví blokující systémové čtení.
+Oprava: neblokující descriptor a čekání na čitelnost přes event loop.
+Soubory: src/jablotron100/transport.py, tests/test_transport.py.
+Ověření: čekání na data, zrušení čtení, zavření a EOF bez hardwaru;
+opakovaný skutečný test skončil návratovým kódem 0.
+Rozdíl proti HA: standalone používá asyncio transport. Tento nález není
+důkazem stejné chyby ve vláknovém transportu původní HA integrace.
+
+S02 — Odlišné časování a neobnovovaný odběr událostí
+Původní standalone stav: heartbeat po 30 s; autorizace a povolení událostí
+proběhly při inicializaci, ale nebyly pravidelně obnovovány.
+Upstream používá heartbeat přibližně po 0,5 s a obnovuje relaci přibližně
+po 30 s; během aktivního alarmu/vstupního zpoždění autorizaci neopakuje.
+Oprava: výchozí interval 0,5 s a obnova po nejméně 30 s; standalone navíc
+kontroluje i příznak sabotage před obnovením autorizace.
+Soubor: src/jablotron100/client.py.
+Ověření: unit test obnovy a jejího vynechání při vstupním zpoždění;
+skutečné příchozí události a souhrnné stavy.
+Omezení závěru: není izolovaně prokázáno, že samotná změna intervalu řeší
+každý výpadek dat. Nevyřešila chybějící diagnostiku zařízení 0.
+
+S03 — Ignorování souhrnných stavů periferií 0xd8
+Projev: paket byl přijat, ale neaktualizoval DeviceSnapshot.active.
+Upstream tento bitmapový formát zpracovává.
+Oprava: parser přeskakuje prefix, používá little-endian bity a rezervovaný
+bit 0. Aktualizuje přijímaná zařízení, která podle klienta mají stav.
+Chybějící pozice v krátkém paketu se nepovažují za neaktivní.
+Soubory: state.py, client.py; tests/test_state.py, tests/test_client.py.
+Ověření: hlavní dveře 10 otevřené/zavřené, pohybová čidla, soulad s 0x55.
+Regresní vzorek zavření dveří: 55 08 44 92 80 02 d0 74 80 2e.
+
+S04 — Neoprávněné vyhodnocení nulového GSM signálu
+Projev: obecný status zařízení 234 byl interpretován jako signál 0 %.
+Vzorek: 52 07 8a ea 05 00 00 00 f2.
+Příčina: chyběla kontrola identifikátoru dat, kterou upstream provádí.
+Oprava: čtení signálu ze statusu jen při identifikátoru 0xa4 nebo 0xd5.
+Soubor: client.py; regresní test v tests/test_client.py.
+Chybějící/neznámý signál je None, nikoli automaticky 0 %.
+
+ROZŠÍŘENÍ A ZÁMĚRNÉ ROZDÍLY
+
+R01 — Částečné dekódování GSM diagnostického podtypu 0x15
+Referenční upstream jej označuje UNKNOWN_GSM a běžnou diagnostickou
+interpretaci připojení pro něj neposkytuje.
+Standalone přidal DeviceInfoType.GSM_EXTENDED. Z druhého bajtu hodnoty
+čte signál: d5 32 ... = 50 %, d5 3c ... = 60 %.
+Obě hodnoty byly porovnány s údaji uživatele; 60 % potvrzuje tabulka F-Linku.
+Neznámá pole vzorku jsou v testech anonymizována.
+Soubor: devices.py; test v tests/test_devices.py.
+Neověřeno: význam ostatních polí, GSM připojeno/nepřipojeno, druh sítě 2G.
+Není dovoleno automaticky přenést bitové rozložení staršího typu 0x04.
+
+R02 — Historické pojmenování BUS devices_loss
+Upstream zachoval starý název ID/funkcí, ale senzor BUS_DEVICES_CURRENT
+má jednotku mA a typ elektrického proudu. Název neznamená počet ztracených
+zařízení. Standalone přidal čitelný alias BusDiagnostics.current_ma.
+Pole devices_loss zůstává kvůli kompatibilitě; asdict() používá tento název.
+Komunikační log uvádí u dekódované sběrnice current_ma.
+Stav: význam jednotky ověřen v upstreamu; skutečný BUS paket této JA-107K
+se zatím nepodařilo získat. Není to potvrzení napětí/proudu živým testem.
+
+R03 — Log transportu
+Nový CommunicationLog + LoggedTransport: oba směry, čas, hex, známý význam,
+potlačení opakování, rotace 2 MB a tři zálohy při výchozím nastavení.
+Neznámé pakety zůstávají označené jako nedekódované.
+Všechny UI pakety 0x80 jsou anonymizovány, aby se neukládaly přístupové kódy.
+Omezení: různé anonymizované UI příkazy se mohou sloučit jako opakování.
+PG audit proto potřebuje log.note() s popisem akce a přijatý stav PG.
+Opakování se potlačuje podle paketů, nikoli jen podle dekódovaného významu;
+změna neznámého čítače v paketu může vytvořit další řádek stejného významu.
+Nejde o úplný nezkrácený USB záznam vhodný pro všechny druhy reverse engineeringu.
+
+R04 — Architektura a konfigurace
+Standalone nepoužívá HA entity, služby ani lifecycle. Má asyncio klienta,
+datové modely, callbacky, TOML a vyměnitelný Transport pro testování.
+Importer přenáší metadata; jejich existence neznamená čerstvý stav zařízení.
+Bezpečnostní položky převzaté do konfigurace samy nevynucují politiku
+aplikačních volání. Metody ovládání vždy pracují s kódem klienta/předaným kódem.
+Při spojení žádá standalone status všech aktivně nakonfigurovaných pozic
+a diagnostiku zařízení 0, modulů a vybraných periferií včetně pulzních měřidel.
+Referenční upstream ve své periodické aktualizaci diagnostiky volí jinou
+sadu zařízení; pravidelně zhruba jednou za hodinu opakuje status/diagnostiku.
+Standalone nyní provádí úplnou inicializaci při spojení/reconnectu;
+další refresh_diagnostics() plánuje aplikace, hodinový plánovač zde není.
+
+OTEVŘENÉ BODY A HRANICE OVĚŘENÍ
+
+O01 — Napájení, baterie a sběrnice ústředny se nenačetly
+Pozorování: ze zařízení 0 přichází obecný status, ale žádný použitelný
+diagnostický paket 0x90 pro napětí, baterii a BUS.
+Zkoušeno: běžná inicializace, pětiminutový monitor, prodleva 1 s mezi
+zapnutím diagnostiky a dotazem, čekání 10 s a samostatné 60s diagnostické
+okno s opakovanými známými dotazy na diagnostiku a status.
+Výsledek: údaje stále None / prázdný slovník sběrnic.
+Známé příkazy: 94 02 00 01 (diagnostika zapnout), 96 03 00 09 00
+(dotaz na info), 52 02 0a 00 (status), 94 02 00 00 (diagnostika vypnout).
+Není prokázáno, zda příčinou jsou oprávnění, inicializační sekvence,
+firmware, nebo jiné omezení protokolu. Toto není prokázaná chyba HA.
+
+Referenční údaje dodal uživatel z F-Linku připojeného vzdáleně:
+- baterie ústředny 13,2 V / 12,9 V;
+- sběrnice 1: 13,1 V / 42 mA;
+- sběrnice 2: 13,1 V / 68 mA;
+- sběrnice 3: 13,1 V / 0 mA;
+- GSM 60 %, síť 2G;
+- baterie periferií 30/31/32: 90/100/90 %, shodné s naším čtením.
+Tabulka tedy nedokládá načtení napětí přes HA ani přes místní USB.
+Zda vzdálené spojení F-Linku vede cloudem, nebylo v tomto projektu ověřeno.
+Další krok: porovnat úspěšnou USB komunikaci F-Linku z Windows při načítání
+diagnostiky. Takový záznam zatím nemáme. Nezkoušet náhodné neznámé příkazy.
+
+O02 — Příkaz není potvrzení výsledku
+set_pg_output() čeká na odeslání, nikoli na potvrzenou změnu. refresh()
+také pouze odesílá dotaz. set_section() vyžádá stav, ale výsledek neověřuje.
+Aplikace musí sledovat novou odpověď a ošetřit timeout/odpojení.
+PG 2 bylo 19. 9. ověřeno v časech logu 01:15:22.995 zapnutí,
+01:15:52.998 vypnutí, s potvrzením ústřednou a následně uživatelem.
+Časovač 30 s běžel v aplikaci, nikoli v ústředně.
+Ovládání sekcí (zastřežení/odstřežení) nebylo fyzicky testováno.
+
+O03 — Dostupnost a stáří dat
+connected neznamená ověřená oprávnění. initialization_complete znamená
+dokončení inicializační úlohy i v případě některých vyčerpaných timeoutů.
+Po výpadku mohou modely obsahovat poslední známé hodnoty; jednotlivá pole
+nemají čas posledního ověření. Výchozí problem=False není samostatný doklad
+úspěšného načtení stavu. Stavové callbacky nepředávají úvodní celý snapshot.
+
+O04 — Další nedekódované pakety
+0x3b (přiřazení do sekcí) se loguje, ale klient z něj neposkytuje mapu
+zařízení -> sekce. Ne všechny další přijaté typy/pole mají implementovaný
+význam, například logy obsahují 0xd0, 0xd2, 0x5f a 0x09.
+Samotná přítomnost neznámého paketu není důkaz poruchy.
+
+EVIDENCE A REPRODUKCE
+
+Jednotkové testy: 49 procházelo při posledním ověření před tvorbou tohoto
+přehledu; příkaz: PYTHONPATH=src /home/emil/python3env/bin/python
+-m unittest discover -s tests (zapsat na jeden řádek).
+
+Lokální logy jsou ignorované Gitem a nemusí být v jiné kopii repozitáře:
+- logs/communication.log: první delší test s logováním;
+- logs/heartbeat.log: test heartbeat 0,5 s;
+- logs/live.log: dveře, pohybová čidla a fyzický USB reconnect;
+- logs/diagnostics.log: GSM signál a opakovaný dotaz na ústřednu;
+- logs/central-long.log: 60s diagnostické okno zařízení 0;
+- logs/pg2-control.log: PG 2 zapnout, 30 s, vypnout, potvrzení.
+Logy mohou obsahovat IP adresy a stavy instalace; nejsou anonymizované celé.
+
+Ověřené fyzické operace: čtení stavů, dveře 10 otevřít/zavřít, události
+pohybových čidel, vytažení/zapojení USB a obnova komunikace, PG 2 zap/vyp.
+Neprovedeno: ovládání sekcí, změny konfigurace ústředny a dekódování
+napájení z úspěšné odpovědi této JA-107K.
+
+Při dalším nálezu doplnit: datum, HW/FW, příkaz, přijatý paket bez citlivých
+údajů, očekávaný/skutečný výsledek, rozdíl proti upstreamu, opravu a test.

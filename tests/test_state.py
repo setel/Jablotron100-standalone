@@ -1,10 +1,20 @@
 import unittest
 
 from jablotron100 import AlarmState, SectionPrimaryState
-from jablotron100.state import parse_pg_output_states, parse_section_states
+from jablotron100.state import parse_device_states, parse_pg_output_states, parse_section_states
+from jablotron100 import ProtocolError
 
 
 class StateParserTests(unittest.TestCase):
+    def test_captured_device_bitmap_and_missing_positions(self):
+        states = parse_device_states(bytes.fromhex("d8110000000200000000000000000000000000"))
+        self.assertEqual([n for n, active in states.items() if active], [17])
+        self.assertNotIn(0, states)
+        self.assertNotIn(128, states)
+        self.assertFalse(states[16])
+        with self.assertRaises(ProtocolError):
+            parse_device_states(bytes.fromhex("d8110000"))
+
     def test_disarmed_section_and_unused_section_marker(self) -> None:
         states = parse_section_states(bytes.fromhex("510401000700"))
 

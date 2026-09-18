@@ -13,6 +13,11 @@ Knihovna přebírá paketové konstanty a dekódovací algoritmy, nikoli třídy
 Home Assistantu. Testovací vektory pocházejí z upstream testů a zachycených
 paketů.
 
+Zjištění z hardwarových testů 18.–19. 9. 2026, opravy standalone přenosu
+a záměrné odchylky jsou vedené v
+[docs/CHYBY_A_ROZDILY_HA.txt](docs/CHYBY_A_ROZDILY_HA.txt).
+Tento přehled nenahrazuje úplný diff proti nové verzi upstreamu.
+
 Při další synchronizaci porovnat především:
 
 - `custom_components/jablotron100/const.py`

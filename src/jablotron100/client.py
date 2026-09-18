@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+from time import monotonic
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 
@@ -58,6 +59,7 @@ from .state import (
     PACKET_PG_OUTPUTS_STATES,
     PACKET_SECTIONS_STATES,
     parse_pg_output_states,
+    parse_device_states,
     parse_section_states,
 )
 
@@ -75,7 +77,7 @@ class JablotronClient:
         code: str,
         port: str = "auto",
         transport: Transport | None = None,
-        keepalive_interval: float = 30.0,
+        keepalive_interval: float = 0.5,
         number_of_pg_outputs: int | None = None,
         devices: tuple[DeviceDefinition, ...] = (),
         sections: tuple[SectionDefinition, ...] = (),
@@ -188,7 +190,7 @@ class JablotronClient:
         *,
         code: str | None = None,
         transport: Transport | None = None,
-        keepalive_interval: float = 30.0,
+        keepalive_interval: float = 0.5,
         auto_reconnect: bool = True,
         reconnect_delay: float = 1.0,
         reconnect_max_delay: float = 30.0,
@@ -466,10 +468,21 @@ class JablotronClient:
             self._schedule_reconnect()
 
     async def _keepalive_loop(self) -> None:
+        last_refresh = monotonic()
         try:
             while self._running:
                 await asyncio.sleep(self._keepalive_interval)
-                await self._send_packets([create_command(COMMAND_HEARTBEAT)])
+                # Match upstream's half-second heartbeat and 30-second session
+                # renewal. Never reauthorize during an alarm or entry delay.
+                now = monotonic()
+                if now - last_refresh >= 30 and not any(
+                    state.triggered or state.sabotage or state.pending
+                    for state in self._sections.values()
+                ):
+                    await self._send_packets(create_keepalive(self._code))
+                    last_refresh = now
+                else:
+                    await self._send_packets([create_command(COMMAND_HEARTBEAT)])
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -518,6 +531,11 @@ class JablotronClient:
                                 for number in modules
                             ]
                         )
+        elif packet[0] == 0xD8:
+            for number, active in parse_device_states(packet).items():
+                if self._accept_device(number) and self._device_has_state(number):
+                    old = self._devices.get(number, DeviceSnapshot(number=number))
+                    await self._store_device_snapshot(old, replace(old, active=active))
         elif packet[0] == PACKET_SECTIONS_STATES:
             new_states = parse_section_states(packet)
             old_states, self._sections = self._sections, new_states
@@ -539,7 +557,11 @@ class JablotronClient:
                 await self._update_diagnostics(
                     lan_ip=".".join(str(part) for part in packet[6:10])
                 )
-            elif role == "gsm" and len(packet) >= 6:
+            elif (
+                role == "gsm"
+                and len(packet) >= 6
+                and packet[4] in (0xA4, 0xD5)
+            ):
                 await self._update_diagnostics(gsm_signal_strength=packet[5])
             elif self._accept_device(status.number):
                 old = self._devices.get(
