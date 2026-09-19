@@ -14,6 +14,8 @@ v `NOTICE.md`.
   konfigurace, příklady, stavy, callbacky, ovládání a logování.
 - [Zjištěné chyby a rozdíly proti HA integraci](docs/CHYBY_A_ROZDILY_HA.txt):
   opravy, otevřené body, ověřené chování a odkazy na místní záznamy.
+- [Podklad pro hlášení upstreamu](docs/UPSTREAM_PODNET.md):
+  anonymizované nové zjištění o GSM diagnostice JA-107K.
 
 Jednotícím rozhraním knihovny je `JablotronClient`; vlastní aplikace používá
 jeho metody. Pomocné konfigurační a testovací skripty nejsou nutné pro její
